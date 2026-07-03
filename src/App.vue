@@ -1023,16 +1023,47 @@ const registerFailedInputAttempt = (btn, feedbackEl) => {
 const handleStandardAnswer = (answer) => {
   const item = currentQuestion.value;
   if (!item) return;
+  if (quizState.value.choicesDisabled) return;
 
   const isCorrect = answer === item.answer || answer === item.correct;
   quizState.value.selectedChoice = answer;
-  quizState.value.choicesDisabled = true;
-  recordQuestionAttempt(item.qid, answer, isCorrect);
-
-  quizState.value.quizFeedbackType = isCorrect ? 'correct' : 'wrong';
-  quizState.value.quizFeedback = (isCorrect ? "Tepat. " : "Belum tepat. ") + item.explanation;
   
-  revealQuizNext();
+  let attempts = 0;
+  if (item.qid) {
+    const attKey = `${item.qid}_Att`;
+    attempts = (studentProgress.value[attKey] || 0) + 1;
+    studentProgress.value[attKey] = attempts;
+    if (isCorrect || attempts >= 3) {
+      const ansKey = `${item.qid}_Ans`;
+      studentProgress.value[ansKey] = isCorrect ? String(answer) : '-';
+    }
+    localStorage.setItem('mds_student_progress', JSON.stringify(studentProgress.value));
+    syncToSheets();
+  } else {
+    attempts = (failedAttempts.value[item.question] || 0) + 1;
+    failedAttempts.value[item.question] = attempts;
+  }
+
+  if (isCorrect) {
+    quizState.value.choicesDisabled = true;
+    quizState.value.quizFeedbackType = 'correct';
+    quizState.value.quizFeedback = "Tepat. " + (item.explanation || "");
+    revealQuizNext();
+  } else {
+    quizState.value.quizFeedbackType = 'wrong';
+    if (attempts >= 3) {
+      quizState.value.choicesDisabled = true;
+      quizState.value.quizFeedback = "Sudah 3 kali mencoba namun belum tepat. Tidak apa-apa, kamu boleh lanjut dulu!";
+      revealQuizNext("Lanjut dulu →");
+    } else {
+      quizState.value.quizFeedback = `Belum tepat. Coba cek lagi perlahan dan perhatikan petunjuk dari video. (Percobaan ${attempts}/3)`;
+      setTimeout(() => {
+        if (!quizState.value.choicesDisabled) {
+          quizState.value.selectedChoice = null;
+        }
+      }, 2000);
+    }
+  }
 };
 
 const submitInputAnswer = () => {
@@ -1856,6 +1887,20 @@ const nextStep = () => {
 const getStepConfig = (stepId) => {
   return courseData[stepId];
 };
+const cdnCovers = [
+  "https://cdn-web-2.ruangguru.com/landing-pages/assets/fec32e8d-d711-48a2-bd22-59581f0594c1.jpg",
+  "https://cdn-web-2.ruangguru.com/landing-pages/assets/2925ebc7-89c3-4010-a057-9807aacc6a32.jpg",
+  "https://cdn-web-2.ruangguru.com/landing-pages/assets/ec2aeaa6-e2e2-4e83-861e-223bfb9e1138.jpg",
+  "https://cdn-web-2.ruangguru.com/landing-pages/assets/47f3ef56-348b-4c3c-a767-aa4a40c5b833.jpg",
+  "https://cdn-web-2.ruangguru.com/landing-pages/assets/00c64b24-9e45-4a7e-8665-0817c04217c3.jpg",
+  "https://cdn-web-2.ruangguru.com/landing-pages/assets/c179c0a4-8817-4f1b-a9ef-cf6dcaa093c9.jpg",
+  "https://cdn-web-2.ruangguru.com/landing-pages/assets/98bcac2b-e88e-46d8-b1c1-deebd6a12c03.jpg"
+];
+
+const getCover = (key) => {
+  const index = (Number(key) - 1) % cdnCovers.length;
+  return cdnCovers[index];
+};
 </script>
 
 <template>
@@ -2030,7 +2075,18 @@ const getStepConfig = (stepId) => {
             <div class="video-frame" :class="{ 'player-ready': playerStates[key]?.isReady }" :data-video-step="key">
               <div :id="'youtube-player-' + key"></div>
               <div class="custom-thumbnail" v-show="!playerStates[key]?.hasStarted" @click="togglePlay(Number(key))">
-                <img :src="'https://placehold.co/1280x720/1a1a1a/ffe600.png?text=Checkpoint+0' + key + '%5CnVideo+Pembelajaran'" alt="Thumbnail" />
+                <div class="thumb-card-blue-bg"></div>
+                <div class="thumb-card">
+                  <div class="thumb-kicker" v-if="data.kicker">{{ data.kicker }}</div>
+                  <div class="thumb-title">{{ data.title }}</div>
+                  <svg class="thumb-decoration" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 50 L50 10 L90 50 L50 90 Z" fill="#ffe600" stroke="#1a1a1a" stroke-width="4" stroke-linejoin="round"/>
+                    <path d="M10 60 L50 100 L90 60" fill="none" stroke="#1a1a1a" stroke-width="4" stroke-linejoin="round"/>
+                    <path d="M50 100 L50 90" stroke="#1a1a1a" stroke-width="4"/>
+                    <path d="M10 60 L10 50" stroke="#1a1a1a" stroke-width="4"/>
+                    <path d="M90 60 L90 50" stroke="#1a1a1a" stroke-width="4"/>
+                  </svg>
+                </div>
               </div>
               <button class="video-center-play" type="button" v-show="!playerStates[key]?.isPlaying && !playerStates[key]?.isBuffering && (playerStates[key]?.isReady || !playerStates[key]?.hasStarted)" @click="togglePlay(Number(key))">▶</button>
               <div class="video-loading-overlay" v-show="playerStates[key]?.isBuffering || (playerStates[key]?.hasStarted && !playerStates[key]?.isReady)">
