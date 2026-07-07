@@ -166,6 +166,7 @@ const recordQuestionAttempt = (qid, answerStr, isCorrect) => {
     studentProgress.value[ansKey] = '0';
     studentProgress.value[`${qid}_Score`] = 0;
     studentProgress.value[`${qid}_Failed`] = true;
+    revealQuizNext();
   }
 
   localStorage.setItem('mds_student_progress', JSON.stringify(studentProgress.value));
