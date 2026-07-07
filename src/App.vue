@@ -99,6 +99,15 @@ const saveProgress = (key, value) => {
   syncToSheets();
 };
 
+const markQuestionFailed = (qid) => {
+  if (!qid) return;
+  studentProgress.value[`${qid}_Ans`] = '0';
+  studentProgress.value[`${qid}_Score`] = 0;
+  studentProgress.value[`${qid}_Failed`] = true;
+  localStorage.setItem('mds_student_progress', JSON.stringify(studentProgress.value));
+  syncToSheets();
+};
+
 const syncToSheets = async () => {
   if (!isLoggedIn.value) return;
   const payload = {
@@ -127,8 +136,13 @@ const recordQuestionAttempt = (qid, answerStr, isCorrect) => {
   const attempts = (studentProgress.value[attKey] || 0) + 1;
 
   studentProgress.value[attKey] = attempts;
-  if (isCorrect || attempts >= 3) {
-    studentProgress.value[ansKey] = isCorrect ? answerStr : '-';
+  if (isCorrect) {
+    studentProgress.value[ansKey] = answerStr;
+    studentProgress.value[`${qid}_Failed`] = false;
+  } else if (attempts >= 3) {
+    studentProgress.value[ansKey] = '0';
+    studentProgress.value[`${qid}_Score`] = 0;
+    studentProgress.value[`${qid}_Failed`] = true;
   }
 
   localStorage.setItem('mds_student_progress', JSON.stringify(studentProgress.value));
@@ -1059,10 +1073,10 @@ const registerFailedInputAttempt = (btn, feedbackEl) => {
 
   if (attempts >= 3) {
     attemptStatus.classList.add("limit-reached");
-    attemptStatus.innerHTML = "<strong>Sudah 3 kali mencoba.</strong><br>Jawabanmu masih belum tepat. Perhatikan lagi videonya, ya. Untuk sekarang kamu boleh lanjut dulu.";
+    markQuestionFailed(currentQuestion.value?.qid);
+    attemptStatus.innerHTML = "<strong>Sudah 3 kali mencoba.</strong><br>Nilai checkpoint ini menjadi 0 dan modul berikutnya tetap terkunci. Minta bantuan mentor sebelum lanjut.";
     btn.disabled = true;
     btn.style.opacity = "0.55";
-    revealQuizNext("Lanjut dulu →");
   } else {
     attemptStatus.textContent = `Percobaan ${attempts} dari 3. Periksa kembali kode atau jawabanmu sebelum mencoba lagi.`;
   }
@@ -1083,9 +1097,12 @@ const handleStandardAnswer = (answer) => {
     const attKey = `${item.qid}_Att`;
     attempts = (studentProgress.value[attKey] || 0) + 1;
     studentProgress.value[attKey] = attempts;
-    if (isCorrect || attempts >= 3) {
+    if (isCorrect) {
       const ansKey = `${item.qid}_Ans`;
-      studentProgress.value[ansKey] = isCorrect ? String(answer) : '-';
+      studentProgress.value[ansKey] = String(answer);
+      studentProgress.value[`${item.qid}_Failed`] = false;
+    } else if (attempts >= 3) {
+      markQuestionFailed(item.qid);
     }
     localStorage.setItem('mds_student_progress', JSON.stringify(studentProgress.value));
     syncToSheets();
@@ -1103,8 +1120,8 @@ const handleStandardAnswer = (answer) => {
     quizState.value.quizFeedbackType = 'wrong';
     if (attempts >= 3) {
       quizState.value.choicesDisabled = true;
-      quizState.value.quizFeedback = "Sudah 3 kali mencoba namun belum tepat. Tidak apa-apa, kamu boleh lanjut dulu!";
-      revealQuizNext("Lanjut dulu →");
+      markQuestionFailed(item.qid);
+      quizState.value.quizFeedback = "Sudah 3 kali salah. Nilai checkpoint ini menjadi 0 dan modul berikutnya tetap terkunci.";
     } else {
       quizState.value.quizFeedback = `Belum tepat. Coba cek lagi perlahan dan perhatikan petunjuk dari video. (Percobaan ${attempts}/3)`;
       setTimeout(() => {
@@ -1172,10 +1189,9 @@ const submitInputAnswer = () => {
     revealQuizNext();
   } else {
     if (attempts >= 3) {
-      quizState.value.quizFeedback = "Sudah 3 kali salah. Jawabanmu masih belum tepat, tapi tidak apa-apa. Untuk sekarang kamu boleh lanjut dulu!";
+      quizState.value.quizFeedback = "Sudah 3 kali salah. Nilai checkpoint ini menjadi 0 dan modul berikutnya tetap terkunci.";
       quizState.value.choicesDisabled = true;
-      studentProgress.value[item.qid + "_Ans"] = '-';
-      revealQuizNext("Lanjut dulu →");
+      markQuestionFailed(item.qid);
     } else {
       quizState.value.quizFeedback = feedbackText + ` (Percobaan ${attempts}/3)`;
       quizState.value.choicesDisabled = false;
@@ -1358,8 +1374,13 @@ const exposeGlobalMethods = () => {
     if (qid === 'V6_Q2') finalAnsKey = 'V6_Wants_Ans';
     if (qid === 'V6_Q3') { finalAnsKey = 'V6_IDE_Code'; studentProgress.value['V6_IDE_Att'] = att; }
     
-    if (isCorrect || att >= 3) {
-      studentProgress.value[finalAnsKey] = isCorrect ? answerStr : '-';
+    if (isCorrect) {
+      studentProgress.value[finalAnsKey] = answerStr;
+      studentProgress.value[`${qid}_Failed`] = false;
+    } else if (att >= 3) {
+      studentProgress.value[finalAnsKey] = '0';
+      studentProgress.value[`${qid}_Score`] = 0;
+      studentProgress.value[`${qid}_Failed`] = true;
     }
     saveProgress(attKey, att); 
   };
@@ -1393,7 +1414,16 @@ const exposeGlobalMethods = () => {
       feedback.innerHTML = `❌ <strong>SALAH!</strong><br>${explanation}`;
       feedback.style.backgroundColor = "#ff5c8a";
       feedback.style.color = "white";
-      revealQuizNext("Lanjut dulu →");
+      const attempts = qid ? studentProgress.value[`${qid}_Att`] || 1 : 1;
+      if (attempts >= 3) {
+        markQuestionFailed(qid);
+        feedback.innerHTML += `<br><strong>Sudah 3 kali mencoba.</strong> Nilai checkpoint ini menjadi 0 dan modul berikutnya tetap terkunci.`;
+      } else {
+        buttons.forEach(b => {
+          b.disabled = false;
+          b.style.opacity = '1';
+        });
+      }
     }
   };
 
@@ -1904,7 +1934,14 @@ const isStepFinished = (stepId) => {
       for (let q of quiz.questions) {
         if (!q.qid) continue;
         const ans = studentProgress.value[`${q.qid}_Ans`];
-        if (ans === undefined || ans === null || ans === '') return false;
+        if (
+          ans === undefined ||
+          ans === null ||
+          ans === '' ||
+          ans === '-' ||
+          ans === '0' ||
+          studentProgress.value[`${q.qid}_Failed`] === true
+        ) return false;
       }
     }
   }
@@ -1923,6 +1960,12 @@ const goToStep = (step) => {
     }
   }
   currentStep.value = step;
+};
+
+const handleStepSelect = (event) => {
+  const requestedStep = Number(event.target.value);
+  goToStep(requestedStep);
+  event.target.value = String(currentStep.value);
 };
 
 const nextStep = () => {
@@ -2096,7 +2139,7 @@ const getCover = (key) => {
         <nav class="mobile-nav">
           <label for="mobile-lesson-select">Pilih Modul</label>
           <div class="select-wrapper">
-            <select id="mobile-lesson-select" v-model="currentStep">
+            <select id="mobile-lesson-select" :value="currentStep" @change="handleStepSelect">
               <option v-for="(data, key) in courseData" :key="key" :value="Number(key)">0{{ key }} {{ data.title }}</option>
             </select>
           </div>
