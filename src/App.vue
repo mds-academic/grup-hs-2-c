@@ -1101,7 +1101,7 @@ const registerFailedInputAttempt = (btn, feedbackEl) => {
     btn.disabled = true;
     btn.style.opacity = "0.55";
   } else {
-    attemptStatus.textContent = `Percobaan ${attempts} dari 3. Periksa kembali kode atau jawabanmu sebelum mencoba lagi.`;
+    let remaining = 3 - attempts; attemptStatus.innerHTML = `❌ Jawaban salah. Sisa ${remaining} kesempatan.`;
   }
 
   feedbackEl.appendChild(attemptStatus);
@@ -1957,10 +1957,7 @@ const isStepFinished = (stepId) => {
         if (
           ans === undefined ||
           ans === null ||
-          ans === '' ||
-          ans === '-' ||
-          ans === '0' ||
-          studentProgress.value[`${q.qid}_Failed`] === true
+          ans === ''
         ) return false;
       }
     }
@@ -1976,7 +1973,7 @@ const goToStep = (step) => {
   }
   for (let i = 1; i < step; i++) {
     if (!isStepFinished(i)) {
-      alert(`Mohon selesaikan video dan kuis/tugas di Modul ${i} terlebih dahulu.`);
+      showDashboardNotice({ type: 'warning', title: 'Modul belum selesai', message: `Selesaikan video dan kuis/tugas di Modul ${i} terlebih dahulu sebelum membuka modul berikutnya.` });
       return;
     }
   }
@@ -1997,7 +1994,7 @@ const prevStep = () => {
 
 const nextStep = () => {
   if (!isStepFinished(currentStep.value)) {
-    alert(`Mohon selesaikan video dan kuis/tugas di modul ini terlebih dahulu.`);
+    showDashboardNotice({ type: 'warning', title: 'Modul belum selesai', message: 'Selesaikan video dan kuis/tugas di modul ini terlebih dahulu sebelum lanjut.' });
     return;
   }
   if (currentStep.value < Object.keys(courseData).length) {
