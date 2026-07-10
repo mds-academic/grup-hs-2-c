@@ -718,6 +718,12 @@ const onIntroEnded = (stepId) => {
   }
 };
 
+const onIntroPlay = (stepId) => {
+  if (!playerStates.value[stepId]) return;
+  playerStates.value[stepId].introPlaying = true;
+  playerStates.value[stepId].hasStarted = true;
+};
+
 const togglePlay = (stepId) => {
   if (playerStates.value[stepId] && !introPlayed.value[stepId]) {
     playIntroThenVideo(stepId);
