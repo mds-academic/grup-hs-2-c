@@ -104,10 +104,41 @@ let schoolSearchRequestId = 0;
 const studentData = ref({ name: '', school: '', email: '' });
 const studentProgress = ref({}); // Menyimpan progress jawaban & attempts
 
+const buildSheetsPayload = () => ({
+  Group: 'ghs2c',
+  Students_Email: studentData.value.email,
+  Students_Name: studentData.value.name,
+  Students_School: studentData.value.school,
+  ...studentProgress.value
+});
+
+const getQuizDebugInfo = (quizConfig = quizState.value.activeQuizConfig, stepId = quizState.value.activeQuizStep || currentStep.value) => {
+  const quizzes = courseData[stepId]?.quizzes || [];
+  const quizIndex = quizConfig ? quizzes.indexOf(quizConfig) + 1 : null;
+  return {
+    tab: Number(stepId),
+    quizKe: quizIndex && quizIndex > 0 ? quizIndex : null,
+    totalQuizDiTab: quizzes.length,
+    waktuVideoDetik: quizConfig?.time ?? null
+  };
+};
+
+const debugLearningEvent = (message, details = {}, payloadOverride = null) => {
+  const payload = payloadOverride || buildSheetsPayload();
+  console.groupCollapsed(`[MDS Debug] ${message}`);
+  console.log('Detail event:', {
+    waktu: new Date().toISOString(),
+    ...details
+  });
+  console.log('Payload yang akan dikirim ke Sheets:', payload);
+  console.groupEnd();
+};
+
 // Tambahkan auto-ID ke semua soal agar gampang ditrack
 Object.keys(courseData).forEach(stepId => {
   let qCounter = 1;
   courseData[stepId].quizzes?.forEach(quiz => {
+    quiz.shown = false;
     quiz.questions.forEach(q => {
       q.qid = `V${stepId}_Q${qCounter}`;
       qCounter++;
@@ -132,19 +163,31 @@ const markQuestionFailed = (qid) => {
 
 const syncToSheets = async () => {
   if (!isLoggedIn.value) return;
-  const payload = {
-    Group: 'ghs2c',
-    Students_Email: studentData.value.email,
-    Students_Name: studentData.value.name,
-    Students_School: studentData.value.school,
-    ...studentProgress.value
-  };
+  const payload = buildSheetsPayload();
+  debugLearningEvent('Mengirim progress ke Sheets', { status: 'sync_mulai' }, payload);
   try {
-    await fetch(APP_SCRIPT_URL, {
+    const res = await fetch(APP_SCRIPT_URL, {
       method: 'POST',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'text/plain;charset=utf-8' } // text/plain untuk bypass CORS AppScript
     });
+    const responseText = await res.text();
+    let responseData = null;
+    try {
+      responseData = responseText ? JSON.parse(responseText) : null;
+    } catch (parseErr) {
+      responseData = responseText;
+    }
+
+    if (!res.ok || responseData?.success === false) {
+      console.error('[MDS Debug] Sync ke Sheets gagal atau ditolak.', {
+        httpStatus: res.status,
+        response: responseData
+      });
+      return;
+    }
+
+    console.log('[MDS Debug] Sync ke Sheets berhasil disimpan.', responseData);
   } catch(err) {
     console.error("Sync error", err);
   }
@@ -169,6 +212,13 @@ const recordQuestionAttempt = (qid, answerStr, isCorrect) => {
   }
 
   localStorage.setItem('mds_student_progress', JSON.stringify(studentProgress.value));
+  debugLearningEvent(`Jawaban quiz di tab ${currentStep.value} ${isCorrect ? 'benar' : 'salah'}`, {
+    status: isCorrect ? 'quiz_jawaban_benar' : (attempts >= 3 ? 'quiz_3_kesempatan_salah' : 'quiz_jawaban_salah'),
+    ...getQuizDebugInfo(),
+    qid,
+    attempts,
+    jawaban: answerStr
+  });
   syncToSheets();
 };
 
@@ -199,6 +249,7 @@ const handleLogin = async () => {
       isLoggedIn.value = true;
       loginEmailAttempts.value = 0;
       localStorage.setItem('mds_student_login', JSON.stringify(studentData.value));
+      debugLearningEvent('Login berhasil', { status: 'login_berhasil' });
     } else {
       loginEmailAttempts.value = nextAttempt;
       loginErrorTitle.value = data.needsRfo ? 'Perlu bantuan RFO' : 'Email belum cocok';
@@ -376,6 +427,7 @@ const quizState = ref({
   replayingQuizVideo: false,
   replayCheckpointArmed: false,
   choicesDisabled: false,
+  selectedChoice: null,
   inputAnswer: ''
 });
 
@@ -538,34 +590,42 @@ const getVideoStartBoundary = (stepId) => {
 };
 
 // Seek boundary enforcement
-const enforceVideoBoundaries = (stepId) => {
+const enforceVideoStartBoundary = (stepId) => {
   const player = players[stepId];
   if (!player || typeof player.getCurrentTime !== "function" || typeof player.seekTo !== "function") return;
   const currentTime = player.getCurrentTime();
   const startBoundary = getVideoStartBoundary(stepId);
-  const endBoundary = courseData[stepId]?.endSeconds;
-
-  const skipSegments = courseData[stepId]?.skipSegments || [];
-  for (const seg of skipSegments) {
-    if (currentTime >= seg.start && currentTime < seg.end) {
-      player.seekTo(seg.end, true);
-      return;
-    }
-  }
 
   if (startBoundary > 0 && currentTime < startBoundary - 0.5) {
     player.seekTo(startBoundary, true);
-  } else if (endBoundary > 0 && currentTime >= endBoundary - 0.5) {
-    player.seekTo(startBoundary > 0 ? startBoundary : 0, true);
-    player.pauseVideo();
-    videoWatchedStatus.value[stepId] = true;
-    
-    introPlayed.value[stepId] = false;
-    if (playerStates.value[stepId]) {
-      playerStates.value[stepId].hasStarted = false;
-      playerStates.value[stepId].isPlaying = false;
-    }
   }
+};
+
+const restartVideoFromBoundary = (stepId, shouldPlay = true) => {
+  const player = players[stepId];
+  if (!player || typeof player.seekTo !== "function") return;
+
+  const startBoundary = getVideoStartBoundary(stepId);
+  player.seekTo(startBoundary, true);
+  playerStates.value[stepId].currentTime = 0;
+  playerStates.value[stepId].progress = 0;
+
+  if (shouldPlay && typeof player.playVideo === "function") {
+    player.playVideo();
+  }
+};
+
+const enforceVideoEndBoundary = (stepId) => {
+  const player = players[stepId];
+  if (!player || typeof player.getCurrentTime !== "function") return false;
+  const endBoundary = courseData[stepId]?.endSeconds;
+
+  if (endBoundary > 0 && player.getCurrentTime() >= endBoundary) {
+    restartVideoFromBoundary(stepId);
+    return true;
+  }
+
+  return false;
 };
 
 const updateVideoControls = (stepId) => {
@@ -602,7 +662,7 @@ const updateVideoControls = (stepId) => {
   playerStates.value[stepId].progress = duration > 0 ? (currentTime / duration * 100) : 0;
   playerStates.value[stepId].durationFormatted = formatVideoTime(duration);
   playerStates.value[stepId].currentTimeFormatted = formatVideoTime(currentTime);
-  if (playerStates.value[stepId].progress >= 95) {
+  if (playerStates.value[stepId].progress >= 90) {
     videoWatchedStatus.value[stepId] = true;
   }
 };
@@ -754,7 +814,7 @@ const initializeYouTubePlayer = (stepId) => {
         playerStates.value[normalizedStepId].duration = event.target.getDuration() || 0;
         
         event.target.setPlaybackQuality('hd1080');
-        enforceVideoBoundaries(normalizedStepId);
+        enforceVideoStartBoundary(normalizedStepId);
         updateVideoControls(normalizedStepId);
       },
       onError: () => {
@@ -768,16 +828,32 @@ const initializeYouTubePlayer = (stepId) => {
 const handlePlayerStateChange = (stepId, event) => {
   const isPlaying = event.data === window.YT.PlayerState.PLAYING;
   const isBuffering = event.data === window.YT.PlayerState.BUFFERING;
+  const wasPlaying = playerStates.value[stepId].isPlaying;
   playerStates.value[stepId].isBuffering = isBuffering;
   playerStates.value[stepId].isPlaying = isPlaying;
 
   if (isPlaying) {
     playerStates.value[stepId].hasStarted = true;
-    enforceVideoBoundaries(stepId);
+    enforceVideoStartBoundary(stepId);
+    if (!wasPlaying) {
+      debugLearningEvent(`Video ${stepId} sedang ditonton`, {
+        status: 'video_sedang_ditonton',
+        tab: Number(stepId),
+        videoId: courseData[stepId]?.videoId || null
+      });
+    }
   }
 
   if (event.data === window.YT.PlayerState.ENDED) {
     videoWatchedStatus.value[stepId] = true;
+    debugLearningEvent(`Video ${stepId} selesai ditonton`, {
+      status: 'video_selesai',
+      tab: Number(stepId),
+      tabBerikutnya: Number(stepId) < totalSteps ? Number(stepId) + 1 : null
+    });
+    if (checkVideoQuizzes(stepId)) return;
+    restartVideoFromBoundary(stepId);
+    return;
   }
 
   updateVideoControls(stepId);
@@ -785,9 +861,12 @@ const handlePlayerStateChange = (stepId, event) => {
   window.clearInterval(timeCheckers[stepId]);
   if (isPlaying) {
     timeCheckers[stepId] = window.setInterval(() => {
-      enforceVideoBoundaries(stepId);
       updateVideoControls(stepId);
-      checkVideoQuizzes(stepId);
+      const quizOpened = checkVideoQuizzes(stepId);
+      if (!quizOpened) {
+        enforceVideoStartBoundary(stepId);
+        enforceVideoEndBoundary(stepId);
+      }
     }, 300);
   }
 };
@@ -815,9 +894,10 @@ const checkVideoQuizzes = (stepId) => {
 
       const shouldResume = quiz.resume !== undefined ? quiz.resume : true;
       openQuiz(quiz.questions, shouldResume, quiz.resumeTime, quiz, stepId);
-      break;
+      return true;
     }
   }
+  return false;
 };
 
 // Quiz Functions
@@ -862,11 +942,19 @@ const openQuiz = (questionsArray, shouldResume = false, seekTime = null, quizCon
   quizState.value.isOpen = true;
   sheet.sequence.play({ direction: 'normal', range: [0, 0.4] });
   quizState.value.choicesDisabled = false;
+  quizState.value.selectedChoice = null;
   quizState.value.quizFeedback = '';
   quizState.value.quizFeedbackType = '';
   quizState.value.essayAnswer = '';
   quizState.value.isNextBtnVisible = false;
   quizState.value.nextBtnText = 'Soal berikutnya →';
+
+  const quizInfo = getQuizDebugInfo(quizConfig, stepId);
+  debugLearningEvent(`Pop up quiz ${quizInfo.quizKe || '-'} dari ${quizInfo.totalQuizDiTab} di tab ${stepId} sedang dikerjakan`, {
+    status: 'quiz_sedang_dikerjakan',
+    ...quizInfo,
+    jumlahSoal: questionsArray.length
+  });
 
   nextTick(() => {
     renderQuestion();
@@ -874,6 +962,22 @@ const openQuiz = (questionsArray, shouldResume = false, seekTime = null, quizCon
 };
 
 const closeQuiz = (resumeVideo = false, seekTime = null) => {
+  const stepId = currentStep.value;
+  const player = players[stepId];
+  if (player && typeof player.getCurrentTime === 'function') {
+    const currentTime = player.getCurrentTime();
+    const stepConfig = courseData[stepId];
+    if (stepConfig && stepConfig.quizzes) {
+      const nextQuiz = stepConfig.quizzes.find(q => !q.shown && currentTime >= q.time);
+      if (nextQuiz) {
+        nextQuiz.shown = true;
+        const shouldResume = nextQuiz.resume !== undefined ? nextQuiz.resume : true;
+        openQuiz(nextQuiz.questions, shouldResume, nextQuiz.resumeTime, nextQuiz, stepId);
+        return;
+      }
+    }
+  }
+
   sheet.sequence.play({ direction: 'reverse', range: [0, 0.4] }).then(() => {
     quizState.value.isOpen = false;
   });
@@ -896,6 +1000,13 @@ const currentQuestion = computed(() => {
   }
   return null;
 });
+
+const getQuestionChoices = (question) => {
+  if (!question) return [];
+  if (Array.isArray(question.choices) && question.choices.length > 0) return question.choices;
+  if (typeof question.answer === "boolean") return ["True", "False"];
+  return [];
+};
 
 const isQuizFinished = computed(() => {
   return quizState.value.shuffledQuestions.length > 0 && 
@@ -1063,6 +1174,9 @@ const attachCustomHtmlListeners = () => {
 };
 
 const renderQuestion = () => {
+  if (currentQuestion.value && (currentQuestion.value.continueOnly || currentQuestion.value.type === 'info')) {
+    revealQuizNext("Lanjut →");
+  }
   if (currentQuestion.value && !currentQuestion.value.html) {
     nextTick(() => {
       const trueBtn = document.querySelector('.choice-btn.true-btn');
@@ -1100,6 +1214,12 @@ const registerFailedInputAttempt = (btn, feedbackEl) => {
   if (attempts >= 3) {
     attemptStatus.classList.add("limit-reached");
     markQuestionFailed(currentQuestion.value?.qid);
+    debugLearningEvent(`Quiz di tab ${currentStep.value} sudah 3 kali salah`, {
+      status: 'quiz_3_kesempatan_salah',
+      ...getQuizDebugInfo(),
+      qid: currentQuestion.value?.qid || null,
+      attempts
+    });
     attemptStatus.innerHTML = "<strong>Sudah 3 kali mencoba.</strong><br>Kamu boleh lanjut dulu. Perhatikan lagi videonya sebelum masuk ke bagian berikutnya, ya.";
     revealQuizNext("Lanjut →");
     btn.disabled = true;
@@ -1116,7 +1236,9 @@ const handleStandardAnswer = (answer) => {
   if (!item) return;
   if (quizState.value.choicesDisabled) return;
 
-  const isCorrect = answer === item.answer || answer === item.correct;
+  const normalizeAnswerValue = (value) => String(value).trim().toLowerCase();
+  const isCorrect = normalizeAnswerValue(answer) === normalizeAnswerValue(item.answer) ||
+    normalizeAnswerValue(answer) === normalizeAnswerValue(item.correct);
   quizState.value.selectedChoice = answer;
   
   let attempts = 0;
@@ -1128,8 +1250,6 @@ const handleStandardAnswer = (answer) => {
       const ansKey = `${item.qid}_Ans`;
       studentProgress.value[ansKey] = String(answer);
       studentProgress.value[`${item.qid}_Failed`] = false;
-    } else if (attempts >= 3) {
-      markQuestionFailed(item.qid);
     }
     localStorage.setItem('mds_student_progress', JSON.stringify(studentProgress.value));
     syncToSheets();
@@ -1143,21 +1263,28 @@ const handleStandardAnswer = (answer) => {
     quizState.value.quizFeedbackType = 'correct';
     quizState.value.quizFeedback = "Tepat. " + (item.explanation || "");
     revealQuizNext();
+    debugLearningEvent(`Jawaban quiz di tab ${currentStep.value} benar`, {
+      status: 'quiz_jawaban_benar',
+      ...getQuizDebugInfo(),
+      qid: item.qid || null,
+      attempts,
+      jawaban: answer,
+      kunciJawaban: item.answer ?? item.correct
+    });
   } else {
     quizState.value.quizFeedbackType = 'wrong';
-    if (attempts >= 3) {
-      quizState.value.choicesDisabled = true;
-      markQuestionFailed(item.qid);
-      quizState.value.quizFeedback = "<strong>Sudah 3 kali mencoba.</strong><br>Kamu boleh lanjut dulu. Perhatikan lagi videonya sebelum masuk ke bagian berikutnya, ya.";
-      revealQuizNext("Lanjut →");
-    } else {
-      quizState.value.quizFeedback = `Belum tepat. Coba cek lagi perlahan dan perhatikan petunjuk dari video. (Percobaan ${attempts}/3)`;
-      setTimeout(() => {
-        if (!quizState.value.choicesDisabled) {
-          quizState.value.selectedChoice = null;
-        }
-      }, 2000);
-    }
+    quizState.value.choicesDisabled = true;
+    quizState.value.quizFeedback = `Belum tepat. Coba cek lagi perlahan dan perhatikan petunjuk dari video.`;
+    markQuestionFailed(item.qid);
+    debugLearningEvent(`Jawaban quiz di tab ${currentStep.value} salah`, {
+      status: 'quiz_jawaban_salah',
+      ...getQuizDebugInfo(),
+      qid: item.qid || null,
+      attempts,
+      jawaban: answer,
+      kunciJawaban: item.answer ?? item.correct
+    });
+    revealQuizNext("Lanjut →");
   }
 };
 
@@ -1257,13 +1384,24 @@ const submitEssayAnswer = () => {
   }
 
   quizState.value.quizFeedbackType = isCorrect ? 'correct' : 'wrong';
-  quizState.value.quizFeedback = feedbackText;
+  recordQuestionAttempt(item.qid, input, isCorrect);
+  const attempts = studentProgress.value[item.qid + "_Att"] || 1;
 
   if (isCorrect) {
+    quizState.value.quizFeedback = feedbackText;
+    quizState.value.choicesDisabled = true;
     revealQuizNext("Selesai!");
   } else {
-    // Biarkan tetap bisa mengisi lagi jika salah
-    quizState.value.choicesDisabled = false;
+    if (attempts >= 3) {
+      quizState.value.quizFeedback = "<strong>Sudah 3 kali mencoba.</strong><br>Kamu boleh lanjut dulu. Perhatikan lagi videonya sebelum masuk ke bagian berikutnya, ya.";
+      revealQuizNext("Lanjut →");
+      quizState.value.choicesDisabled = true;
+      markQuestionFailed(item.qid);
+    } else {
+      let remaining = 3 - attempts;
+      quizState.value.quizFeedback = `${feedbackText}<br><br>Sisa percobaan: ${remaining}`;
+      quizState.value.choicesDisabled = false;
+    }
   }
 };
 
@@ -1443,17 +1581,13 @@ const exposeGlobalMethods = () => {
       feedback.innerHTML = `❌ <strong>SALAH!</strong><br>${explanation}`;
       feedback.style.backgroundColor = "#ff5c8a";
       feedback.style.color = "white";
-      const attempts = qid ? studentProgress.value[`${qid}_Att`] || 1 : 1;
-      if (attempts >= 3) {
-        markQuestionFailed(qid);
-        feedback.innerHTML += `<br><strong>Sudah 3 kali mencoba.</strong> Kamu boleh lanjut dulu. Perhatikan lagi videonya sebelum masuk ke bagian berikutnya, ya.`;
-        revealQuizNext("Lanjut →");
-      } else {
-        buttons.forEach(b => {
-          b.disabled = false;
-          b.style.opacity = '1';
-        });
-      }
+      
+      buttons.forEach(b => {
+        b.disabled = false;
+        b.style.opacity = '1';
+      });
+      markQuestionFailed(qid);
+      revealQuizNext("Lanjut →");
     }
   };
 
@@ -1919,6 +2053,12 @@ watch(currentQuestion, (newQ) => {
 });
 
 watch(currentStep, (newStep) => {
+  debugLearningEvent(`Tab ${newStep} dibuka`, {
+    status: 'tab_dibuka',
+    tab: Number(newStep),
+    title: courseData[newStep]?.title || ''
+  });
+
   const stepKey = newStep.toString();
   if ((newStep === 3 || newStep === 5 || newStep === 7) && courseData[stepKey] && courseData[stepKey].quizzes && courseData[stepKey].quizzes[0].questions[0].type === 'pyscript') {
     pyscriptCode.value = courseData[stepKey].quizzes[0].questions[0].initialCode || '';
